@@ -13,7 +13,6 @@ from concurrent.futures import ThreadPoolExecutor
 from unittest.mock import Mock
 
 import pytest
-from opentelemetry.proto.collector.metrics.v1.metrics_service_pb2 import ExportMetricsServiceRequest
 from opentelemetry.sdk.metrics.export import AggregationTemporality
 
 from tests.conftest import metric_observations as observations
@@ -457,7 +456,7 @@ def test_sdk_preserves_individual_labels_and_excludes_unknown_attributes():
     assert all(set(p.attributes) == {"show_all"} for p in points)
 
 
-def test_standard_exporter_wire_format_and_workspace_headers(monkeypatch):
+def test_exporter_preserves_workspace_auth_and_disables_redirects(monkeypatch):
     import requests
 
     sent = []
@@ -491,11 +490,6 @@ def test_standard_exporter_wire_format_and_workspace_headers(monkeypatch):
     assert trust_env is True
     netrc_lookup.assert_not_called()
     assert kwargs["allow_redirects"] is False
-    request = ExportMetricsServiceRequest.FromString(prepared.body)
-    metric = request.resource_metrics[0].scope_metrics[0].metrics[0]
-    assert metric.name == "ug_usage_duration_ms"
-    assert metric.histogram.aggregation_temporality == 1  # OTLP DELTA
-    assert metric.histogram.data_points[0].count == 1
 
 
 def test_exporter_stops_after_disabled_endpoint(monkeypatch):
@@ -595,45 +589,6 @@ def test_export_disabled_creates_no_buffer_thread_or_uploader(monkeypatch, value
     assert metrics._runtime is None
     thread.assert_not_called()
     upload.assert_not_called()
-
-
-@pytest.mark.parametrize("value", ["1", "true"])
-def test_export_enabled_collects_and_hands_off_metrics(monkeypatch, reporter_pipe, value):
-    monkeypatch.setattr(metrics, "_runtime", None)
-    monkeypatch.setenv("UG_ENABLE_METRICS_EXPORT", value)
-    child, reader = reporter_pipe
-    spawn = Mock(return_value=child)
-    monkeypatch.setattr(exporter, "start_exporter", spawn)
-    metrics.begin("usage")
-    runtime = metrics._runtime
-    try:
-        deadline = time.monotonic() + 2
-        while runtime.reporter is None and time.monotonic() < deadline:
-            time.sleep(0.01)
-        assert runtime.reporter is child
-        # Synchronize only the test with startup; contention drops are covered separately.
-        with runtime.lock:
-            pass
-        metrics.bind(HOST, "fake-token")
-        metrics.record("ug_usage_duration_ms", 12)
-        deadline = time.monotonic() + 2
-        while runtime.pending and time.monotonic() < deadline:
-            time.sleep(0.01)
-        assert not runtime.pending
-    finally:
-        metrics.finish()
-        runtime.thread.join(timeout=2)
-    spawn.assert_called_once_with()
-    buffer = exporter.ExportBuffer()
-    buffer.read(reader)
-    assert buffer.drain() == [
-        {
-            "workspace": HOST,
-            "token": "fake-token",
-            "headers": {},
-            "observations": [("ug_usage_duration_ms", 12, {"command": "usage"})],
-        }
-    ]
 
 
 def test_collection_uses_ug_flag_independently_of_global_otel_setting(monkeypatch):

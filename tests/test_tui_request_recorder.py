@@ -1,6 +1,9 @@
+import gzip
 import json
+import ssl
 import sys
 import threading
+import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -14,6 +17,7 @@ from tests.e2e_cuj.helpers.tui_request_recorder import (
     TuiRequestRecorder,
 )
 from tests.integration.utils import request_recorder
+from tests.integration.utils.tls import localhost_tls, trust_localhost_certificate
 
 
 @pytest.fixture
@@ -243,3 +247,37 @@ def test_teardown_leaves_client_open_for_forward_that_outlives_drain(held_upstre
     release.set()
     thread.join(5)
     assert bodies == [b"held"]
+
+
+@pytest.mark.parametrize("compressed", [False, True], ids=["protobuf", "gzip-protobuf"])
+def test_https_recorder_preserves_wire_bytes_and_verifies_certificate(
+    recorder, tmp_path, compressed
+):
+    context, certificate = localhost_tls(tmp_path / "tls")
+    env = {"NO_PROXY": "existing.internal"}
+    trust_localhost_certificate(env, certificate)
+    client_context = ssl.create_default_context(cafile=env["SSL_CERT_FILE"])
+    assert "existing.internal" in env["NO_PROXY"]
+    # Binary bytes must survive forwarding; the recorder must not decode/re-encode them.
+    body = b"\x0a\x07\x12\x05\x00\xff\x80\x01\x02"
+    body = gzip.compress(body) if compressed else body
+    headers = {"Content-Type": "application/x-protobuf", "Authorization": "Bearer fixture-token"}
+    if compressed:
+        headers["Content-Encoding"] = "gzip"
+    path = "/api/2.0/ai-gateway/ug-cli/otel/v1/metrics"
+    with request_recorder.TuiRequestRecorder(recorder.url, tls=context) as secure:
+        with pytest.raises(httpx.ConnectError, match="CERTIFICATE_VERIFY_FAILED"):
+            httpx.post(secure.url + path, content=body, timeout=5, trust_env=False)
+        request = urllib.request.Request(secure.url + path, data=body, headers=headers)
+        with urllib.request.urlopen(request, context=client_context, timeout=5) as response:
+            assert response.status == 200
+        captured = secure.expect_request(method="POST", path=path)
+        forwarded = recorder.expect_request(method="POST", path=path)
+        assert captured.body == forwarded.body == body
+        assert captured.headers["content-type"] == "application/x-protobuf"
+        assert (
+            captured.headers["authorization"] == forwarded.headers["authorization"] == "<redacted>"
+        )
+        if compressed:
+            assert forwarded.headers["content-encoding"] == "gzip"
+        assert secure.response_for(captured).payload == {"result": "ok"}

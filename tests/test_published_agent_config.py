@@ -345,7 +345,7 @@ class TestCodexFiles:
     def catalog(self, monkeypatch):
         built: list[list[str]] = []
 
-        def prepare(binary, names):
+        def prepare(binary, names, **kwargs):
             built.append(list(names))
             return {"models": [{"slug": name} for name in names]}
 
@@ -413,7 +413,7 @@ class TestCodexFiles:
         assert any(w.startswith("Replaced") for w in plan.warnings)
 
     def test_a_catalog_that_wont_build_stops_the_run(self, monkeypatch):
-        def fail(binary, names):
+        def fail(binary, names, **kwargs):
             raise RuntimeError("Could not build the managed Codex model catalog locally.")
 
         monkeypatch.setattr(machine, "prepare_codex_catalog", fail)
@@ -740,6 +740,23 @@ def _configure(*args: str):
 
 
 class TestGlobalCli:
+    def test_static_catalog_reuses_configure_credentials(self, monkeypatch, writes, global_cli):
+        raw = _raw_config(codex_config={"models": {"model_services": ["main.team.opaque"]}})
+        monkeypatch.setattr(machine, "get_managed_config", lambda host, token: (raw, None))
+        monkeypatch.setattr(machine, "get_databricks_token", lambda *a, **kw: "selected-token")
+        catalogs = []
+
+        def prepare(binary, names, *, workspace, get_token):
+            catalogs.append((workspace, list(names), get_token()))
+            return {"models": [{"slug": name} for name in names]}
+
+        monkeypatch.setattr(machine, "prepare_codex_catalog", prepare)
+
+        result = _configure("--agents", "codex")
+
+        assert result.exit_code == 0, result.output
+        assert catalogs == [(WS, ["main.team.opaque"], "selected-token")]
+
     def test_published_config_rebuilds_and_provisions_desktop(
         self, monkeypatch, writes, global_cli
     ):

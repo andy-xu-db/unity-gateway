@@ -28,9 +28,7 @@ jobs:
   resolve:
     name: Resolve scan request
     if: ${{ github.event.workflow_run.event == 'pull_request' }}
-    runs-on:
-      group: databricks-protected-runner-group
-      labels: linux-ubuntu-latest
+    runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
       actions: read

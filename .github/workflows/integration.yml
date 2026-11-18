@@ -704,9 +704,7 @@ jobs:
   codex-relay:
     name: Codex relay login and inference
     needs: workspace
-    runs-on:
-      group: databricks-protected-runner-group
-      labels: linux-ubuntu-latest
+    runs-on: ubuntu-latest
     timeout-minutes: 20
     env:
       PACKAGE_INDEX: https://pypi-proxy.cloud.databricks.com/simple
